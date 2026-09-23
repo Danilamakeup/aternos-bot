@@ -6,23 +6,37 @@ import asyncio
 import json
 import struct
 
+
+# =========================================================
+# НАСТРОЙКИ
+# =========================================================
+
 TOKEN = os.getenv("TOKEN")
 
 SERVER_HOST = "heavenserver.aternos.me"
 SERVER_PORT = 15419
+
 CHECK_INTERVAL = 60
+
+
+# =========================================================
+# DISCORD
+# =========================================================
 
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
 
 monitor_task = None
 
 
-# =========================
-# Minecraft VarInt
-# =========================
+# =========================================================
+# MINECRAFT VARINT
+# =========================================================
 
 def encode_varint(value):
     result = bytearray()
@@ -55,7 +69,9 @@ async def read_varint(reader):
         num_read += 1
 
         if num_read > 5:
-            raise ValueError("VarInt слишком большой")
+            raise ValueError(
+                "VarInt слишком большой"
+            )
 
         if not (byte & 0x80):
             break
@@ -63,9 +79,9 @@ async def read_varint(reader):
     return result
 
 
-# =========================
-# Проверка Minecraft-сервера
-# =========================
+# =========================================================
+# ПРОВЕРКА MINECRAFT-СЕРВЕРА
+# =========================================================
 
 async def check_minecraft_server():
 
@@ -73,11 +89,21 @@ async def check_minecraft_server():
     writer = None
 
     print("=" * 60)
-    print(f"[Aternos] Проверяю {SERVER_HOST}:{SERVER_PORT}")
+
+    print(
+        f"[Aternos] Проверяю "
+        f"{SERVER_HOST}:{SERVER_PORT}"
+    )
 
     try:
 
-        print("[Aternos] Подключаюсь к серверу...")
+        # -------------------------------------------------
+        # TCP CONNECTION
+        # -------------------------------------------------
+
+        print(
+            "[Aternos] Подключаюсь к серверу..."
+        )
 
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(
@@ -87,44 +113,65 @@ async def check_minecraft_server():
             timeout=10
         )
 
-        print("[Aternos] TCP соединение установлено!")
+        print(
+            "[Aternos] TCP соединение установлено!"
+        )
 
-        # 1. Handshake
+        # -------------------------------------------------
+        # MINECRAFT HANDSHAKE
+        # -------------------------------------------------
 
         protocol_version = 767
 
-        host_bytes = SERVER_HOST.encode("utf-8")
+        host_bytes = SERVER_HOST.encode(
+            "utf-8"
+        )
 
         handshake_data = (
             encode_varint(0) +
             encode_varint(protocol_version) +
             encode_varint(len(host_bytes)) +
             host_bytes +
-            struct.pack(">H", SERVER_PORT) +
+            struct.pack(
+                ">H",
+                SERVER_PORT
+            ) +
             encode_varint(1)
         )
 
         handshake_packet = (
-            encode_varint(len(handshake_data)) +
+            encode_varint(
+                len(handshake_data)
+            ) +
             handshake_data
         )
 
-        writer.write(handshake_packet)
+        writer.write(
+            handshake_packet
+        )
 
-        # 2. Status Request
+        # -------------------------------------------------
+        # STATUS REQUEST
+        # -------------------------------------------------
 
         status_request = (
             encode_varint(1) +
             encode_varint(0)
         )
 
-        writer.write(status_request)
+        writer.write(
+            status_request
+        )
 
         await writer.drain()
 
-        print("[Aternos] Status Request отправлен")
+        print(
+            "[Aternos] Status Request отправлен"
+        )
 
-        # 3. Ответ сервера
+        # -------------------------------------------------
+        # RESPONSE
+        # -------------------------------------------------
 
         packet_length = await asyncio.wait_for(
             read_varint(reader),
@@ -141,14 +188,21 @@ async def check_minecraft_server():
             timeout=10
         )
 
-        print(f"[Aternos] Packet ID: {packet_id}")
+        print(
+            f"[Aternos] Packet ID: "
+            f"{packet_id}"
+        )
 
         if packet_id != 0:
+
             raise ValueError(
-                f"Неожиданный Packet ID: {packet_id}"
+                f"Неожиданный Packet ID: "
+                f"{packet_id}"
             )
 
-        # 4. JSON
+        # -------------------------------------------------
+        # JSON
+        # -------------------------------------------------
 
         json_length = await asyncio.wait_for(
             read_varint(reader),
@@ -161,33 +215,111 @@ async def check_minecraft_server():
         )
 
         json_data = await asyncio.wait_for(
-            reader.readexactly(json_length),
+            reader.readexactly(
+                json_length
+            ),
             timeout=10
         )
 
-        json_text = json_data.decode("utf-8")
-
-        print(
-            f"[Aternos] Ответ: "
-            f"{json_text[:500]}"
+        json_text = json_data.decode(
+            "utf-8"
         )
 
-        data = json.loads(json_text)
+        print(
+            "[Aternos] Ответ:"
+        )
 
-        players = data.get("players", {})
+        print(
+            json_text[:1000]
+        )
 
-        online = players.get("online", 0)
-        maximum = players.get("max", 0)
+        data = json.loads(
+            json_text
+        )
 
-        version_data = data.get("version", {})
+        # -------------------------------------------------
+        # PLAYERS
+        # -------------------------------------------------
+
+        players = data.get(
+            "players",
+            {}
+        )
+
+        online = players.get(
+            "online",
+            0
+        )
+
+        maximum = players.get(
+            "max",
+            0
+        )
+
+        # -------------------------------------------------
+        # VERSION
+        # -------------------------------------------------
+
+        version_data = data.get(
+            "version",
+            {}
+        )
 
         version = version_data.get(
             "name",
             "Unknown"
         )
 
+        # =================================================
+        # ГЛАВНОЕ ИСПРАВЛЕНИЕ
+        # =================================================
+
+        # Aternos может отвечать даже когда Minecraft
+        # сервер выключен.
+        #
+        # В этом случае он может вернуть:
+        #
+        # §c Offline
+        #
+        # Поэтому просто факт получения JSON
+        # НЕ означает, что сервер онлайн.
+
+        version_clean = str(
+            version
+        ).replace(
+            "§c",
+            ""
+        ).strip().lower()
+
+        if (
+            "offline" in version_clean
+            or version_clean == ""
+        ):
+
+            print(
+                "[Aternos] 🔴 Сервер OFFLINE"
+            )
+
+            print(
+                "[Aternos] Aternos вернул "
+                "'Offline'"
+            )
+
+            print("=" * 60)
+
+            return {
+                "online": False,
+                "players": 0,
+                "max_players": maximum,
+                "version": version
+            }
+
+        # -------------------------------------------------
+        # ONLINE
+        # -------------------------------------------------
+
         print(
-            f"[Aternos] УСПЕХ!"
+            "[Aternos] 🟢 УСПЕХ!"
         )
 
         print(
@@ -205,38 +337,42 @@ async def check_minecraft_server():
             "version": version
         }
 
+    # =====================================================
+    # ERRORS
+    # =====================================================
+
     except asyncio.TimeoutError:
 
         print(
-            "[Aternos ERROR] TIMEOUT: "
-            "сервер не ответил."
+            "[Aternos ERROR] "
+            "TIMEOUT: сервер не ответил."
         )
 
     except ConnectionRefusedError as e:
 
         print(
-            f"[Aternos ERROR] "
+            "[Aternos ERROR] "
             f"CONNECTION REFUSED: {e}"
         )
 
     except OSError as e:
 
         print(
-            f"[Aternos ERROR] "
+            "[Aternos ERROR] "
             f"{type(e).__name__}: {e}"
         )
 
     except json.JSONDecodeError as e:
 
         print(
-            f"[Aternos ERROR] "
+            "[Aternos ERROR] "
             f"JSON ERROR: {e}"
         )
 
     except Exception as e:
 
         print(
-            f"[Aternos ERROR] "
+            "[Aternos ERROR] "
             f"{type(e).__name__}: {e}"
         )
 
@@ -261,9 +397,9 @@ async def check_minecraft_server():
     }
 
 
-# =========================
-# Discord
-# =========================
+# =========================================================
+# DISCORD READY
+# =========================================================
 
 @bot.event
 async def on_ready():
@@ -278,12 +414,12 @@ async def on_ready():
     )
 
     print(
-        f"[Discord] Мониторинг: "
+        f"[Discord] Minecraft: "
         f"{SERVER_HOST}:{SERVER_PORT}"
     )
 
     print(
-        f"[Discord] Интервал: "
+        f"[Discord] Интервал проверки: "
         f"{CHECK_INTERVAL} секунд"
     )
 
@@ -291,18 +427,24 @@ async def on_ready():
 
     # Запускаем монитор только один раз
 
-    if monitor_task is None or monitor_task.done():
+    if (
+        monitor_task is None
+        or monitor_task.done()
+    ):
 
-        print("[Monitor] Запускаю фоновый монитор...")
+        print(
+            "[Monitor] Запускаю "
+            "фоновый монитор..."
+        )
 
         monitor_task = asyncio.create_task(
             server_monitor()
         )
 
 
-# =========================
+# =========================================================
 # !ping
-# =========================
+# =========================================================
 
 @bot.command()
 async def ping(ctx):
@@ -312,9 +454,9 @@ async def ping(ctx):
     )
 
 
-# =========================
+# =========================================================
 # !статус
-# =========================
+# =========================================================
 
 @bot.command()
 async def статус(ctx):
@@ -325,7 +467,7 @@ async def статус(ctx):
 
     print(
         f"[Discord] Пользователь "
-        f"{ctx.author} запросил !статус"
+        f"{ctx.author} использовал !статус"
     )
 
     status = await check_minecraft_server()
@@ -347,24 +489,26 @@ async def статус(ctx):
         await ctx.send(
             f"🔴 **Сервер оффлайн**\n\n"
             f"🌐 `{SERVER_HOST}:{SERVER_PORT}`\n"
-            f"⚠️ Подробности находятся "
+            f"⚠️ Подробности смотри "
             f"в **Render Logs**."
         )
 
 
-# =========================
+# =========================================================
 # !status
-# =========================
+# =========================================================
 
 @bot.command()
 async def status(ctx):
 
-    await ctx.invoke(статус)
+    await ctx.invoke(
+        статус
+    )
 
 
-# =========================
-# Фоновый монитор
-# =========================
+# =========================================================
+# ФОНОВЫЙ МОНИТОР
+# =========================================================
 
 async def server_monitor():
 
@@ -372,17 +516,24 @@ async def server_monitor():
         "[Monitor] Фоновый монитор запущен!"
     )
 
-    # Даём Discord немного времени
-    # нормально подключиться
+    # Небольшая задержка после запуска Discord
 
     await asyncio.sleep(5)
 
     while True:
 
         print("\n")
-        print("#" * 60)
-        print("[Monitor] НАЧАЛО ПРОВЕРКИ")
-        print("#" * 60)
+        print(
+            "#" * 60
+        )
+
+        print(
+            "[Monitor] НАЧАЛО ПРОВЕРКИ"
+        )
+
+        print(
+            "#" * 60
+        )
 
         status = await check_minecraft_server()
 
@@ -400,16 +551,18 @@ async def server_monitor():
                 "[Monitor] 🔴 OFFLINE"
             )
 
-        print("#" * 60)
+        print(
+            "#" * 60
+        )
 
         await asyncio.sleep(
             CHECK_INTERVAL
         )
 
 
-# =========================
-# Render Web Server
-# =========================
+# =========================================================
+# RENDER WEB SERVER
+# =========================================================
 
 async def handle(request):
 
@@ -427,9 +580,14 @@ async def start_web_server():
         handle
     )
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(
+        app
+    )
 
     await runner.setup()
+
+    # Render сам передаёт PORT.
+    # Обычно это 10000.
 
     port = int(
         os.environ.get(
@@ -452,9 +610,9 @@ async def start_web_server():
     )
 
 
-# =========================
-# Запуск
-# =========================
+# =========================================================
+# MAIN
+# =========================================================
 
 async def main():
 
@@ -464,7 +622,15 @@ async def main():
         "[Bot] Запускаю Discord..."
     )
 
-    await bot.start(TOKEN)
+    await bot.start(
+        TOKEN
+    )
 
 
-asyncio.run(main())
+# =========================================================
+# START
+# =========================================================
+
+asyncio.run(
+    main()
+)
